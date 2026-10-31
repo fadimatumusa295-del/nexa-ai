@@ -1,0 +1,11 @@
+{
+  "appId": "com.amadu.nexaai",
+  "appName": "NEXA AI",
+  "webDir": "dist",
+  "backgroundColor": "#0a0e17",
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
