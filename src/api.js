@@ -6,7 +6,7 @@
 //  - the answer is looked for under many common names (reply, response, answer, ...)
 // Once the real format is confirmed, buildRequestBody() and REPLY_KEYS can be tightened.
 
-import { BACKEND_URL, REQUEST_TIMEOUT_MS } from './config.js';
+import { BACKEND_URL, REQUEST_TIMEOUT_MS, SMART_PROMPT, MEMORY_MESSAGES } from './config.js';
 
 export class ApiError extends Error {
   // code: 'network' | 'timeout' | 'http' | 'format' | 'empty'
@@ -19,8 +19,56 @@ export class ApiError extends Error {
   }
 }
 
-export function buildRequestBody(message, lang) {
-  return { message, prompt: message, text: message, query: message, language: lang, lang };
+// extra: more fields sent along (the chat history and the plain question).
+export function buildRequestBody(message, lang, extra = {}) {
+  return { message, prompt: message, text: message, query: message, language: lang, lang, ...extra };
+}
+
+/* ------------------------- chat memory and smart prompt ------------------------- */
+
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+export function describeNow(now = new Date()) {
+  const h = now.getHours();
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  return `${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}, ${h12}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+// history: [{ role: 'user' | 'assistant', content }]. Keeps the latest messages, each shortened.
+export function trimHistory(history, maxMessages = MEMORY_MESSAGES, maxChars = 600) {
+  return (history || [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .slice(-maxMessages)
+    .map((m) => ({
+      role: m.role,
+      content: m.content.length > maxChars ? `${m.content.slice(0, maxChars)}…` : m.content,
+    }));
+}
+
+// Wraps the user's question with short instructions and the recent conversation, so any
+// AI model behind the Worker answers well and remembers the chat.
+export function buildPrompt(text, lang, history = [], now = new Date(), { smart = SMART_PROMPT } = {}) {
+  if (!smart) return text;
+  const language = lang === 'ha' ? 'Hausa' : 'English';
+  const lines = [
+    `[Instructions for NEXA AI: You are NEXA AI, a smart, warm and knowledgeable voice assistant for people in Northern Nigeria. ` +
+      `Reply in ${language}, unless the user clearly writes in another language. ` +
+      `Be accurate and genuinely helpful. Think carefully before you answer, give practical details, and if you are not sure of something, say so instead of guessing. ` +
+      `Keep answers short and clear because they may be read aloud: plain text only, no markdown, no asterisks, no emojis, no tables. ` +
+      `Use the conversation below for context. Local date and time: ${describeNow(now)}.]`,
+  ];
+  const turns = trimHistory(history);
+  if (turns.length) {
+    lines.push('[Conversation so far]');
+    for (const t of turns) lines.push(`${t.role === 'user' ? 'User' : 'NEXA'}: ${t.content}`);
+  }
+  lines.push('[New message from the user]', text);
+  return lines.join('\n');
 }
 
 const REPLY_KEYS = [
@@ -88,7 +136,7 @@ function serverMessage(data, raw) {
 export async function askBackend(
   message,
   lang,
-  { fetchImpl = globalThis.fetch, url = BACKEND_URL, timeoutMs = REQUEST_TIMEOUT_MS } = {},
+  { fetchImpl = globalThis.fetch, url = BACKEND_URL, timeoutMs = REQUEST_TIMEOUT_MS, extra = {} } = {},
 ) {
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   let timer;
@@ -105,7 +153,7 @@ export async function askBackend(
       res = await fetchImpl(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(buildRequestBody(message, lang)),
+        body: JSON.stringify(buildRequestBody(message, lang, extra)),
         signal: controller?.signal,
       });
     } catch (e) {

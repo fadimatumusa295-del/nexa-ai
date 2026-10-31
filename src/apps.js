@@ -2,8 +2,12 @@
 //
 // aliases : names people say (already "folded": lower-case, no special letters)
 // attempts: tried in order. A package name (com.whatsapp) launches that app;
-//           something with a colon (tel:, market://) is an Android link.
-// web     : optional website opened ONLY if no installed app could be opened.
+//           something with a colon (tel:, market://) is an Android link;
+//           "native:xxx" asks Android itself for the phone's default app of that kind
+//           (works whatever brand the phone is).
+// find    : optional names to look for among the apps installed on the phone when none of
+//           the attempts worked (default: the label).
+// web     : optional page opened ONLY if no installed app could be opened.
 //
 // Package names differ between phone brands, so several are listed for some apps.
 
@@ -49,6 +53,51 @@ export const APPS = [
     ],
   },
   {
+    key: 'clock',
+    label: 'Clock',
+    aliases: [
+      'clock', 'alarm', 'alarms', 'alarm clock', 'clock app', 'alarm app', 'watch', 'agogo', 'kararrawa',
+    ],
+    attempts: [
+      'native:alarms',
+      'com.google.android.deskclock',
+      'com.android.deskclock',
+      'com.sec.android.app.clockpackage',
+      'com.transsion.deskclock',
+    ],
+  },
+  {
+    key: 'calculator',
+    label: 'Calculator',
+    aliases: ['calculator', 'calc', 'calculater', 'kalkuleta', 'lissafi'],
+    attempts: [
+      'native:calculator',
+      'com.google.android.calculator',
+      'com.android.calculator2',
+      'com.sec.android.app.popupcalculator',
+      'com.miui.calculator',
+      'com.transsion.calculator',
+    ],
+  },
+  {
+    key: 'files',
+    label: 'Files',
+    find: ['files', 'file manager', 'my files'],
+    aliases: [
+      'files', 'file manager', 'file manager app', 'my files', 'files app', 'file explorer',
+      'file', 'fayil', 'fayiloli', 'manajan fayil',
+    ],
+    attempts: [
+      'com.google.android.apps.nbu.files',
+      'com.android.documentsui',
+      'com.google.android.documentsui',
+      'com.sec.android.app.myfiles',
+      'com.mi.android.globalFileexplorer',
+      'com.transsion.filemanager',
+      'native:files',
+    ],
+  },
+  {
     key: 'camera',
     label: 'Camera',
     aliases: ['camera', 'kyamara', 'camara'],
@@ -65,6 +114,21 @@ export const APPS = [
     label: 'Settings',
     aliases: ['settings', 'setting', 'saiti', 'saitunan waya'],
     attempts: ['com.android.settings'],
+  },
+  {
+    key: 'opay',
+    label: 'OPay',
+    aliases: ['opay', 'o pay', 'opay app', 'opei', 'opey'],
+    attempts: ['team.opay.pay'],
+    // If the package above is wrong for this phone, the app is found by its name instead.
+    web: 'https://play.google.com/store/search?q=opay&c=apps',
+  },
+  {
+    key: 'moniepoint',
+    label: 'Moniepoint',
+    aliases: ['moniepoint', 'monie point', 'money point', 'moniepoint app', 'monipoint'],
+    attempts: ['com.moniepoint.personal'],
+    web: 'https://play.google.com/store/search?q=moniepoint&c=apps',
   },
   {
     key: 'facebook',

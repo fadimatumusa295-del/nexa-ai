@@ -1,9 +1,10 @@
 import './style.css';
-import { DEFAULT_LANGUAGE, LANGUAGES } from './config.js';
+import { DEFAULT_LANGUAGE, LANGUAGES, MEMORY_STORED_MAX } from './config.js';
 import { t } from './i18n.js';
 import { parseCommand } from './commands.js';
 import { runCommand } from './launcher.js';
-import { askBackend, ApiError } from './api.js';
+import { askBackend, buildPrompt, trimHistory, ApiError } from './api.js';
+import { cleanReply } from './text.js';
 import { listen, stopListening, speak, stopSpeaking, VoiceError } from './voice.js';
 
 const $ = (id) => document.getElementById(id);
@@ -15,6 +16,7 @@ const speakBtn = $('speakBtn');
 const sendBtn = $('sendBtn');
 const composer = $('composer');
 const voiceToggle = $('voiceReplies');
+const newChatBtn = $('newChat');
 
 const store = {
   get(key, fallback) {
@@ -48,6 +50,37 @@ const ttsWarned = {};
 
 const say = (key, params) => t(lang, key, params);
 
+/* ------------------------------ chat memory ------------------------------ */
+// The conversation is saved on the phone, so NEXA remembers it between messages and
+// after the app is closed. "New chat" clears it.
+
+const MEMORY_KEY = 'nexa.memory';
+
+function loadMemory() {
+  try {
+    const list = JSON.parse(store.get(MEMORY_KEY, '[]'));
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+      .slice(-MEMORY_STORED_MAX);
+  } catch {
+    return [];
+  }
+}
+
+let memory = loadMemory();
+
+function remember(role, content) {
+  memory.push({ role, content: String(content).slice(0, 2000) });
+  memory = memory.slice(-MEMORY_STORED_MAX);
+  store.set(MEMORY_KEY, JSON.stringify(memory));
+}
+
+function forgetAll() {
+  memory = [];
+  store.set(MEMORY_KEY, '[]');
+}
+
 /* ------------------------------ UI helpers ------------------------------ */
 
 function addMessage(kind, text, extraClass = '') {
@@ -78,6 +111,7 @@ function applyLanguage() {
   document.documentElement.lang = lang;
   $('tagline').textContent = say('tagline');
   $('voiceRepliesLabel').textContent = say('voiceReplies');
+  newChatBtn.textContent = say('newChat');
   input.placeholder = say('placeholder');
   sendBtn.textContent = say('send');
   document.querySelectorAll('.lang-btn').forEach((b) => {
@@ -158,15 +192,24 @@ async function handleSend(raw) {
     const command = parseCommand(text);
     if (command) {
       const result = await runCommand(command);
-      addMessage(result.ok ? 'note' : 'error', say(result.key, result.params), result.ok ? 'ok' : '');
-      return;
+      if (!result.passToAi) {
+        const info = result.level === 'info';
+        addMessage(result.ok || info ? 'note' : 'error', say(result.key, result.params), result.ok && !info ? 'ok' : '');
+        return;
+      }
+      // Not a phone command after all (for example "open a bank account"): ask the AI.
     }
 
     const pending = addMessage('note', say('thinking'), 'typing');
     try {
-      const { reply } = await askBackend(text, lang);
+      const history = trimHistory(memory);
+      const prompt = buildPrompt(text, lang, history);
+      const { reply: raw } = await askBackend(prompt, lang, { extra: { history, question: text } });
+      const reply = cleanReply(raw) || raw;
       pending.remove();
       lastReply = reply;
+      remember('user', text);
+      remember('assistant', reply);
       addMessage('bot', reply);
       if (voiceReplies) speakReply(reply); // not awaited: speaking continues in the background
     } catch (e) {
@@ -235,6 +278,18 @@ speakBtn.addEventListener('click', async () => {
   speakReply(lastReply, { explicit: true });
 });
 
+newChatBtn.addEventListener('click', async () => {
+  if (busy) return;
+  speakToken++;
+  speaking = false;
+  await stopSpeaking();
+  forgetAll();
+  lastReply = '';
+  Array.from(chat.children).forEach((c) => c.remove());
+  addMessage('bot', say('greeting'));
+  updateButtons();
+});
+
 document.querySelectorAll('.lang-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     const next = btn.dataset.lang;
@@ -260,4 +315,11 @@ voiceToggle.addEventListener('change', () => {
 /* ------------------------------ start ------------------------------ */
 
 applyLanguage();
-addMessage('bot', say('greeting'));
+if (memory.length) {
+  // Show the saved conversation again so the chat looks the way it was left.
+  for (const m of memory.slice(-30)) addMessage(m.role === 'user' ? 'user' : 'bot', m.content);
+  const lastBot = [...memory].reverse().find((m) => m.role === 'assistant');
+  if (lastBot) lastReply = lastBot.content;
+} else {
+  addMessage('bot', say('greeting'));
+}
