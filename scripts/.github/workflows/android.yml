@@ -1,0 +1,50 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install packages
+        run: npm install --legacy-peer-deps
+
+      - name: Build the web app
+        run: npm run build
+
+      - name: Create the Android project
+        run: npx cap add android
+
+      - name: Add microphone and app-visibility settings
+        run: node scripts/patch-android.mjs
+
+      - name: Copy the web app into Android
+        run: npx cap sync android
+
+      - name: Build the APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Save the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexa-ai-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
