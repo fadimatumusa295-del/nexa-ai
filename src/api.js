@@ -1,12 +1,14 @@
 // Talks to the NEXA AI Cloudflare Worker.
 //
-// NOTE: the exact request/response format of the Worker could not be checked while
-// building this app, so this file is deliberately tolerant:
-//  - the question is sent under several common field names (message, prompt, text, query)
-//  - the answer is looked for under many common names (reply, response, answer, ...)
-// Once the real format is confirmed, buildRequestBody() and REPLY_KEYS can be tightened.
+// What the Worker expects (read from its code):
+//   POST  { message, language, history, personalMemory }
+//     message         the question, at most 3000 characters
+//     language        "ha-NG" or "Hausa" for Hausa; anything else means English
+//     history         [{ role: "user" | "model", text }]  (the Worker keeps the latest 12)
+//     personalMemory  an object; the Worker tells the AI to use it when relevant
+//   Answer:  { reply }   or on a problem   { error }  with a status code.
 
-import { BACKEND_URL, REQUEST_TIMEOUT_MS, SMART_PROMPT, MEMORY_MESSAGES } from './config.js';
+import { BACKEND_URL, REQUEST_TIMEOUT_MS, MEMORY_MESSAGES, MAX_MESSAGE_CHARS, LANGUAGES } from './config.js';
 
 export class ApiError extends Error {
   // code: 'network' | 'timeout' | 'http' | 'format' | 'empty'
@@ -19,12 +21,7 @@ export class ApiError extends Error {
   }
 }
 
-// extra: more fields sent along (the chat history and the plain question).
-export function buildRequestBody(message, lang, extra = {}) {
-  return { message, prompt: message, text: message, query: message, language: lang, lang, ...extra };
-}
-
-/* ------------------------- chat memory and smart prompt ------------------------- */
+/* ------------------------- date, history and memory ------------------------- */
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = [
@@ -39,37 +36,44 @@ export function describeNow(now = new Date()) {
   return `${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}, ${h12}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
 }
 
-// history: [{ role: 'user' | 'assistant', content }]. Keeps the latest messages, each shortened.
-export function trimHistory(history, maxMessages = MEMORY_MESSAGES, maxChars = 600) {
-  return (history || [])
+// The app stores { role: 'user' | 'assistant', content }. The Worker wants
+// { role: 'user' | 'model', text }. Keeps the latest messages (each shortened) and makes
+// sure the list starts with the user, as the AI service requires.
+export function toWorkerHistory(history, max = MEMORY_MESSAGES, maxChars = 1500) {
+  const list = (history || [])
     .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
-    .slice(-maxMessages)
+    .slice(-max)
     .map((m) => ({
-      role: m.role,
-      content: m.content.length > maxChars ? `${m.content.slice(0, maxChars)}…` : m.content,
+      role: m.role === 'assistant' ? 'model' : 'user',
+      text: m.content.length > maxChars ? `${m.content.slice(0, maxChars)}…` : m.content,
     }));
+  while (list.length && list[0].role !== 'user') list.shift();
+  return list;
 }
 
-// Wraps the user's question with short instructions and the recent conversation, so any
-// AI model behind the Worker answers well and remembers the chat.
-export function buildPrompt(text, lang, history = [], now = new Date(), { smart = SMART_PROMPT } = {}) {
-  if (!smart) return text;
-  const language = lang === 'ha' ? 'Hausa' : 'English';
-  const lines = [
-    `[Instructions for NEXA AI: You are NEXA AI, a smart, warm and knowledgeable voice assistant for people in Northern Nigeria. ` +
-      `Reply in ${language}, unless the user clearly writes in another language. ` +
-      `Be accurate and genuinely helpful. Think carefully before you answer, give practical details, and if you are not sure of something, say so instead of guessing. ` +
-      `Keep answers short and clear because they may be read aloud: plain text only, no markdown, no asterisks, no emojis, no tables. ` +
-      `Use the conversation below for context. Local date and time: ${describeNow(now)}.]`,
-  ];
-  const turns = trimHistory(history);
-  if (turns.length) {
-    lines.push('[Conversation so far]');
-    for (const t of turns) lines.push(`${t.role === 'user' ? 'User' : 'NEXA'}: ${t.content}`);
-  }
-  lines.push('[New message from the user]', text);
-  return lines.join('\n');
+// Extra facts the Worker passes to the AI: the date and time, how to word answers, and
+// whatever the user asked NEXA to remember.
+export function buildPersonalMemory({ facts = [], now = new Date() } = {}) {
+  const memory = {
+    current_local_date_and_time: describeNow(now),
+    how_to_answer:
+      'Answers may be read aloud: use plain text, no markdown, no asterisks, no emojis, no tables. Be accurate and keep it short unless more detail is needed.',
+  };
+  const list = (facts || []).filter((f) => typeof f === 'string' && f.trim());
+  if (list.length) memory.things_the_user_asked_you_to_remember = list;
+  return memory;
 }
+
+export function buildRequestBody(message, lang, { history = [], personalMemory = {} } = {}) {
+  return {
+    message: String(message ?? '').slice(0, MAX_MESSAGE_CHARS),
+    language: LANGUAGES[lang]?.worker ?? 'en-NG',
+    history: toWorkerHistory(history),
+    personalMemory,
+  };
+}
+
+/* ------------------------------ reading the answer ------------------------------ */
 
 const REPLY_KEYS = [
   'reply', 'response', 'answer', 'message', 'text', 'output',
@@ -133,10 +137,17 @@ function serverMessage(data, raw) {
   return snippet(raw);
 }
 
+// options: history, personalMemory (see buildRequestBody); fetchImpl, url, timeoutMs (for tests)
 export async function askBackend(
   message,
   lang,
-  { fetchImpl = globalThis.fetch, url = BACKEND_URL, timeoutMs = REQUEST_TIMEOUT_MS, extra = {} } = {},
+  {
+    history = [],
+    personalMemory = {},
+    fetchImpl = globalThis.fetch,
+    url = BACKEND_URL,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+  } = {},
 ) {
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   let timer;
@@ -153,7 +164,7 @@ export async function askBackend(
       res = await fetchImpl(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(buildRequestBody(message, lang, extra)),
+        body: JSON.stringify(buildRequestBody(message, lang, { history, personalMemory })),
         signal: controller?.signal,
       });
     } catch (e) {

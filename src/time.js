@@ -137,3 +137,22 @@ export function formatDuration(seconds) {
   if (s) parts.push(`${s} second${s === 1 ? '' : 's'}`);
   return parts.join(' ') || '0 seconds';
 }
+
+const DAY_NAMES = {
+  en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+  ha: ['Lahadi', 'Litinin', 'Talata', 'Laraba', 'Alhamis', 'Juma’a', 'Asabar'],
+};
+const MONTH_NAMES = {
+  en: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
+  ha: ['Janairu', 'Fabrairu', 'Maris', 'Afrilu', 'Mayu', 'Yuni', 'Yuli', 'Agusta', 'Satumba', 'Oktoba', 'Nuwamba', 'Disamba'],
+};
+
+// "Sunday, 1 November 2026"  /  "Lahadi, 1 ga Nuwamba, 2026"
+export function formatDate(date, lang = 'en') {
+  const l = lang === 'ha' ? 'ha' : 'en';
+  const day = DAY_NAMES[l][date.getDay()];
+  const month = MONTH_NAMES[l][date.getMonth()];
+  return l === 'ha'
+    ? `${day}, ${date.getDate()} ga ${month}, ${date.getFullYear()}`
+    : `${day}, ${date.getDate()} ${month} ${date.getFullYear()}`;
+}

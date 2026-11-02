@@ -1,11 +1,19 @@
 import './style.css';
-import { DEFAULT_LANGUAGE, LANGUAGES, MEMORY_STORED_MAX } from './config.js';
+import { DEFAULT_LANGUAGE, LANGUAGES, MEMORY_STORED_MAX, MAX_MESSAGE_CHARS } from './config.js';
 import { t } from './i18n.js';
 import { parseCommand } from './commands.js';
 import { runCommand } from './launcher.js';
-import { askBackend, buildPrompt, trimHistory, ApiError } from './api.js';
+import { askBackend, buildPersonalMemory, ApiError } from './api.js';
+import { addFact, parseFacts } from './facts.js';
 import { cleanReply } from './text.js';
 import { listen, stopListening, speak, stopSpeaking, VoiceError } from './voice.js';
+import {
+  handsFreeStatus,
+  startHandsFree,
+  stopHandsFree,
+  openOverlaySettings,
+  onHandsFreeCommand,
+} from './handsfree.js';
 
 const $ = (id) => document.getElementById(id);
 const chat = $('chat');
@@ -81,6 +89,36 @@ function forgetAll() {
   store.set(MEMORY_KEY, '[]');
 }
 
+/* ------------------------- "remember that ..." facts ------------------------- */
+
+const FACTS_KEY = 'nexa.facts';
+let facts = parseFacts(store.get(FACTS_KEY, '[]'));
+
+function saveFacts() {
+  store.set(FACTS_KEY, JSON.stringify(facts));
+}
+
+// remember / recall / forget are handled here because the facts live in this file.
+function runFactCommand(command) {
+  if (command.kind === 'remember') {
+    const before = facts;
+    facts = addFact(facts, command.fact);
+    if (facts === before) return { ok: false, key: 'rememberWhat', params: {} };
+    saveFacts();
+    return { ok: true, key: 'remembered', params: { fact: facts[facts.length - 1] } };
+  }
+  if (command.kind === 'recall') {
+    return facts.length
+      ? { ok: true, level: 'info', key: 'recallList', params: { facts: facts.join('; ') } }
+      : { ok: true, level: 'info', key: 'recallNone', params: {} };
+  }
+  facts = [];
+  saveFacts();
+  return { ok: true, key: 'forgotFacts', params: {} };
+}
+
+const FACT_COMMANDS = new Set(['remember', 'recall', 'forget-facts']);
+
 /* ------------------------------ UI helpers ------------------------------ */
 
 function addMessage(kind, text, extraClass = '') {
@@ -111,6 +149,7 @@ function applyLanguage() {
   document.documentElement.lang = lang;
   $('tagline').textContent = say('tagline');
   $('voiceRepliesLabel').textContent = say('voiceReplies');
+  $('handsFreeLabel').textContent = say('handsFree');
   newChatBtn.textContent = say('newChat');
   input.placeholder = say('placeholder');
   sendBtn.textContent = say('send');
@@ -179,6 +218,11 @@ async function speakReply(text, { explicit = false } = {}) {
 
 /* ------------------------------ sending ------------------------------ */
 
+function showResult(result) {
+  const info = result.level === 'info';
+  addMessage(result.ok || info ? 'note' : 'error', say(result.key, result.params), result.ok && !info ? 'ok' : '');
+}
+
 async function handleSend(raw) {
   const text = String(raw ?? '').trim();
   if (!text || busy) return;
@@ -191,20 +235,27 @@ async function handleSend(raw) {
   try {
     const command = parseCommand(text);
     if (command) {
-      const result = await runCommand(command);
+      const result = FACT_COMMANDS.has(command.kind)
+        ? runFactCommand(command)
+        : await runCommand(command, { lang });
       if (!result.passToAi) {
-        const info = result.level === 'info';
-        addMessage(result.ok || info ? 'note' : 'error', say(result.key, result.params), result.ok && !info ? 'ok' : '');
+        showResult(result);
         return;
       }
       // Not a phone command after all (for example "open a bank account"): ask the AI.
     }
 
+    if (text.length > MAX_MESSAGE_CHARS) {
+      addMessage('error', say('tooLong', { max: MAX_MESSAGE_CHARS }));
+      return;
+    }
+
     const pending = addMessage('note', say('thinking'), 'typing');
     try {
-      const history = trimHistory(memory);
-      const prompt = buildPrompt(text, lang, history);
-      const { reply: raw } = await askBackend(prompt, lang, { extra: { history, question: text } });
+      const { reply: raw } = await askBackend(text, lang, {
+        history: memory,
+        personalMemory: buildPersonalMemory({ facts }),
+      });
       const reply = cleanReply(raw) || raw;
       pending.remove();
       lastReply = reply;
@@ -297,6 +348,7 @@ document.querySelectorAll('.lang-btn').forEach((btn) => {
     lang = next;
     store.set('nexa.lang', lang);
     applyLanguage();
+    if (handsFreeToggle.checked) startHandsFree(lang, handsFreeTexts()); // listen in the new language
   });
 });
 
@@ -310,6 +362,64 @@ voiceToggle.addEventListener('change', () => {
     updateButtons();
     stopSpeaking();
   }
+});
+
+/* ------------------------------ hands-free ------------------------------ */
+// A background service listens for "Nexa, <command>" while the app is closed (see handsfree.js).
+
+const handsFreeToggle = $('handsFree');
+
+const handsFreeTexts = () => ({
+  title: say('handsFreeTitle'),
+  text: say('handsFreeText'),
+  stop: say('handsFreeStop'),
+});
+
+handsFreeToggle.addEventListener('change', async () => {
+  if (!handsFreeToggle.checked) {
+    await stopHandsFree();
+    addMessage('note', say('handsFreeOff'));
+    return;
+  }
+
+  const status = await handsFreeStatus();
+  if (!status.supported) {
+    handsFreeToggle.checked = false;
+    addMessage('error', say('handsFreePreview'));
+    return;
+  }
+
+  const result = await startHandsFree(lang, handsFreeTexts());
+  if (result.ok) {
+    addMessage('note', say('handsFreeOn'), 'ok');
+    addMessage('note', say('handsFreeTip'));
+    return;
+  }
+
+  handsFreeToggle.checked = false;
+  if (result.reason === 'overlay') {
+    addMessage('note', say('handsFreeNeedOverlay'));
+    await openOverlaySettings();
+  } else if (result.reason === 'mic') {
+    addMessage('error', say('micDenied'));
+  } else if (result.reason === 'recognizer') {
+    addMessage('error', say('micUnavailable'));
+  } else {
+    addMessage('error', say('handsFreeFailed'));
+  }
+});
+
+// A command heard while NEXA was closed (or in the background). Runs like a typed message;
+// if NEXA is busy with something else it waits its turn.
+async function runHeardCommand(text) {
+  for (let i = 0; i < 100 && busy; i++) await new Promise((r) => setTimeout(r, 300));
+  await handleSend(text);
+}
+onHandsFreeCommand(runHeardCommand);
+
+// The service may have stopped since last time (phone restarted, "Stop" in the notification).
+handsFreeStatus().then((status) => {
+  handsFreeToggle.checked = status.supported && status.running;
 });
 
 /* ------------------------------ start ------------------------------ */

@@ -79,3 +79,16 @@ export function findContacts(query, contacts) {
     .sort((a, b) => a.name.localeCompare(b.name));
   return { status: matches.length === 1 ? 'one' : 'many', matches };
 }
+
+// WhatsApp wants the number with its country code and no "+" or spaces.
+// Nigerian numbers written with a leading 0 (0803...) become 234803...
+export function whatsappNumber(raw, countryCode = '234') {
+  const s = String(raw ?? '').trim();
+  let digits = s.replace(/\D/g, '');
+  if (!digits) return '';
+  if (s.startsWith('+')) return digits;
+  if (digits.startsWith('00')) return digits.slice(2);
+  if (digits.startsWith('0')) return countryCode + digits.slice(1);
+  if (digits.length === 10) return countryCode + digits;
+  return digits;
+}

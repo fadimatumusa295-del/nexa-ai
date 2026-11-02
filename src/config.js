@@ -8,25 +8,29 @@ export const REQUEST_TIMEOUT_MS = 45000;
 
 export const DEFAULT_LANGUAGE = 'en';
 
-// Smart mode: every question is sent together with short instructions (be accurate,
-// answer in the chosen language, keep it short for voice) and the recent conversation,
-// so the AI can remember what was said. Set to false to send only the bare question.
-export const SMART_PROMPT = true;
+// The Worker refuses a message longer than this.
+export const MAX_MESSAGE_CHARS = 3000;
 
-// How many recent chat messages are sent along with each question.
+// How many recent chat messages are sent along with each question (the Worker keeps 12).
 export const MEMORY_MESSAGES = 12;
 
 // How many messages are kept on the phone between app restarts.
 export const MEMORY_STORED_MAX = 60;
 
+// "Remember that ..." facts kept on the phone and sent along with each question.
+export const MAX_FACTS = 30;
+export const FACT_MAX_CHARS = 200;
+
 export const LANGUAGES = {
   en: {
     name: 'English',
+    worker: 'en-NG', // what the Worker is told (it answers in English for anything but Hausa)
     speech: 'en-NG', // language used by the microphone (speech recognition)
     tts: ['en-US', 'en-GB', 'en'], // voices tried, in order, for reading replies aloud
   },
   ha: {
     name: 'Hausa',
+    worker: 'ha-NG', // the Worker only answers in Hausa when it receives exactly "ha-NG" or "Hausa"
     speech: 'ha-NG',
     tts: ['ha-NG', 'ha'],
   },

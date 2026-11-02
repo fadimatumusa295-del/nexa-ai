@@ -1,21 +1,20 @@
-// Runs a phone command (open an app, call, alarm, timer, YouTube search).
+// Runs a phone command (open an app, call, message, alarm, torch, volume ...).
 //
 // Honesty rule: a command is reported as done ONLY if Android accepted it.
 // Otherwise the result says it failed. (Android does not tell us whether the Clock app
-// really saved an alarm, so alarm/timer messages say "asked your Clock app".)
+// really saved an alarm, or whether a message was sent, so those messages say
+// "asked your Clock app" or "press send".)
 //
 // A result is { ok, level?, passToAi?, key, params }:
 //   level 'info'  -> a neutral note (for example "which of these two did you mean?")
 //   passToAi true -> this was not really a phone command, so the message goes to the AI
 
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor } from '@capacitor/core';
 import { AppLauncher } from '@capacitor/app-launcher';
-import { findContacts } from './contacts.js';
+import { NexaDevice } from './device.js'; // the Android helper in scripts/NexaDevicePlugin.java
+import { findContacts, whatsappNumber } from './contacts.js';
 import { findInstalledApps } from './installed.js';
-import { formatDuration, formatTime } from './time.js';
-
-// Small Android helper written in scripts/NexaDevicePlugin.java
-const NexaDevice = registerPlugin('NexaDevice');
+import { formatDate, formatDuration, formatTime } from './time.js';
 
 const reason = (e) => String(e?.message ?? e ?? '').toLowerCase();
 
@@ -65,29 +64,37 @@ async function openInstalled(names) {
   return { status: 'none' };
 }
 
-/* ------------------------------- calling ------------------------------- */
+/* ------------------------------- contacts ------------------------------- */
 
-async function callContact(cmd) {
+// Finds the saved contact. Returns { person } or { fail: <result to show> }.
+async function pickContact(name) {
   let contacts;
   try {
     const res = await NexaDevice.getContacts();
     contacts = res?.contacts ?? [];
   } catch (e) {
-    return reason(e).includes('permission')
-      ? { ok: false, key: 'contactsDenied', params: {} }
-      : { ok: false, key: 'contactsFailed', params: {} };
+    return {
+      fail: reason(e).includes('permission')
+        ? { ok: false, key: 'contactsDenied', params: {} }
+        : { ok: false, key: 'contactsFailed', params: {} },
+    };
   }
 
-  const found = findContacts(cmd.name, contacts);
+  const found = findContacts(name, contacts);
   if (found.status === 'none') {
-    return { ok: false, key: 'contactNotFound', params: { name: cmd.name } };
+    return { fail: { ok: false, key: 'contactNotFound', params: { name } } };
   }
   if (found.status === 'many') {
     const names = found.matches.slice(0, 4).map((m) => m.name).join(', ');
-    return { ok: false, level: 'info', key: 'contactMany', params: { names } };
+    return { fail: { ok: false, level: 'info', key: 'contactMany', params: { names } } };
   }
+  return { person: found.matches[0] };
+}
 
-  const person = found.matches[0];
+async function callContact(cmd) {
+  const picked = await pickContact(cmd.name);
+  if (picked.fail) return picked.fail;
+  const { person } = picked;
   const number = person.numbers[0];
   try {
     const res = await NexaDevice.callNumber({ number });
@@ -110,9 +117,47 @@ async function callPlainNumber(number) {
   }
 }
 
+// WhatsApp and text messages are opened with the words already typed in. Android does not
+// let an app press "send" for you, so the person always presses it.
+async function messageContact(cmd) {
+  const picked = await pickContact(cmd.name);
+  if (picked.fail) return picked.fail;
+  const { person } = picked;
+  const number = person.numbers[0];
+  const text = cmd.text || '';
+  const enc = encodeURIComponent(text);
+
+  if (cmd.kind === 'whatsapp') {
+    const n = whatsappNumber(number);
+    const ok =
+      (await tryOpen(`whatsapp://send?phone=${n}${text ? `&text=${enc}` : ''}`)) ||
+      (await tryOpen(`https://wa.me/${n}${text ? `?text=${enc}` : ''}`));
+    return ok
+      ? { ok: true, key: text ? 'whatsappOpened' : 'whatsappOpenedNoText', params: { name: person.name } }
+      : { ok: false, key: 'messageFailed', params: { app: 'WhatsApp', name: person.name } };
+  }
+
+  const ok = await tryOpen(`sms:${number}${text ? `?body=${enc}` : ''}`);
+  return ok
+    ? { ok: true, key: text ? 'smsOpened' : 'smsOpenedNoText', params: { name: person.name } }
+    : { ok: false, key: 'messageFailed', params: { app: 'Messages', name: person.name } };
+}
+
 /* ------------------------------- main entry ------------------------------- */
 
-export async function runCommand(cmd) {
+// ctx: { lang, now } (now is only for tests)
+export async function runCommand(cmd, ctx = {}) {
+  const lang = ctx.lang === 'ha' ? 'ha' : 'en';
+  const now = ctx.now ?? new Date();
+
+  // These need no phone service, so they also work in a browser preview.
+  if (cmd.kind === 'time') {
+    return { ok: true, key: 'timeNow', params: { time: formatTime(now.getHours(), now.getMinutes()) } };
+  }
+  if (cmd.kind === 'date') {
+    return { ok: true, key: 'dateNow', params: { date: formatDate(now, lang) } };
+  }
+
   if (!Capacitor.isNativePlatform()) {
     // In a browser preview "open <something>" may just be a normal question.
     if (cmd.kind === 'open-installed') return { ok: false, passToAi: true, key: '', params: {} };
@@ -122,6 +167,8 @@ export async function runCommand(cmd) {
   if (cmd.kind === 'dial') return callPlainNumber(cmd.number);
 
   if (cmd.kind === 'call-contact') return callContact(cmd);
+
+  if (cmd.kind === 'whatsapp' || cmd.kind === 'sms') return messageContact(cmd);
 
   if (cmd.kind === 'alarm-help') {
     return { ok: false, level: 'info', key: 'askAlarmTime', params: {} };
@@ -143,6 +190,59 @@ export async function runCommand(cmd) {
     } catch {
       return { ok: false, key: 'timerFailed', params: {} };
     }
+  }
+
+  if (cmd.kind === 'torch') {
+    try {
+      await NexaDevice.setTorch({ on: cmd.on });
+      return { ok: true, key: cmd.on ? 'torchOn' : 'torchOff', params: {} };
+    } catch {
+      return { ok: false, key: 'torchFailed', params: {} };
+    }
+  }
+
+  if (cmd.kind === 'volume') {
+    try {
+      const res = await NexaDevice.changeVolume({ action: cmd.action });
+      const key = { up: 'volumeUp', down: 'volumeDown', max: 'volumeMax', mute: 'volumeMute' }[cmd.action];
+      return { ok: true, key, params: { level: res?.level ?? '?', max: res?.max ?? '?' } };
+    } catch {
+      return { ok: false, key: 'volumeFailed', params: {} };
+    }
+  }
+
+  if (cmd.kind === 'battery') {
+    try {
+      const res = await NexaDevice.getBattery();
+      const percent = Number(res?.percent);
+      if (!Number.isFinite(percent) || percent < 0) throw new Error('no-battery');
+      return { ok: true, key: res?.charging ? 'batteryCharging' : 'battery', params: { percent: Math.round(percent) } };
+    } catch {
+      return { ok: false, key: 'batteryFailed', params: {} };
+    }
+  }
+
+  if (cmd.kind === 'settings-page') {
+    const ok = await tryNative(cmd.page);
+    if (!ok) return { ok: false, key: 'settingsFailed', params: { page: cmd.label } };
+    return { ok: true, key: cmd.on === null ? 'settingsOpened' : 'settingsNoToggle', params: { page: cmd.label } };
+  }
+
+  if (cmd.kind === 'navigate') {
+    const enc = encodeURIComponent(cmd.place);
+    const ok =
+      (await tryOpen(`google.navigation:q=${enc}`)) ||
+      (await tryOpen(`https://www.google.com/maps/dir/?api=1&destination=${enc}`));
+    return ok
+      ? { ok: true, key: 'navigating', params: { place: cmd.place } }
+      : { ok: false, key: 'navigateFailed', params: { place: cmd.place } };
+  }
+
+  if (cmd.kind === 'web-search') {
+    const ok = await tryOpen(`https://www.google.com/search?q=${encodeURIComponent(cmd.query)}`);
+    return ok
+      ? { ok: true, key: 'searchOpened', params: { query: cmd.query } }
+      : { ok: false, key: 'searchFailed', params: {} };
   }
 
   if (cmd.kind === 'youtube-search') {
