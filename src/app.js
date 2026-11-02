@@ -13,6 +13,7 @@ import {
   stopHandsFree,
   openOverlaySettings,
   onHandsFreeCommand,
+  setAppVisible,
 } from './handsfree.js';
 
 const $ = (id) => document.getElementById(id);
@@ -289,6 +290,8 @@ micBtn.addEventListener('click', async () => {
   if (busy) return;
 
   cancelledListen = false;
+  await setAppVisible(true); // make sure hands-free has let go of the microphone
+  await new Promise((r) => setTimeout(r, 300));
   await stopSpeaking();
   listening = true;
   setStatus(say('listening'));
@@ -416,6 +419,9 @@ async function runHeardCommand(text) {
   await handleSend(text);
 }
 onHandsFreeCommand(runHeardCommand);
+
+document.addEventListener('visibilitychange', () => setAppVisible(!document.hidden));
+setAppVisible(true);
 
 // The service may have stopped since last time (phone restarted, "Stop" in the notification).
 handsFreeStatus().then((status) => {

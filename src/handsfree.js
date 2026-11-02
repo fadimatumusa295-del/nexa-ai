@@ -83,3 +83,14 @@ export async function onHandsFreeCommand(callback) {
     /* an older build without the helper: nothing to listen to */
   }
 }
+
+// Tells the service whether NEXA is on screen. While it is, the service lets go of the
+// microphone so the mic button inside the app works.
+export async function setAppVisible(visible) {
+  if (!Capacitor.isNativePlatform()) return;
+  try {
+    await NexaDevice.setAppVisible({ visible });
+  } catch {
+    /* an older build: the Android side tracks it on its own */
+  }
+}
