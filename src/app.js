@@ -189,7 +189,7 @@ function describeVoiceError(e) {
     case 'no-speech':
       return say('noSpeech');
     default:
-      return say('micFailed');
+      return say('micFailed') + (e?.detail ? `\n(${e.detail})` : '');
   }
 }
 

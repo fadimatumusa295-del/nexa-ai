@@ -9,10 +9,11 @@ import { LANGUAGES } from './config.js';
 
 export class VoiceError extends Error {
   // code: 'unavailable' | 'permission' | 'no-speech' | 'failed'
-  constructor(code) {
+  constructor(code, detail = '') {
     super(code);
     this.name = 'VoiceError';
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -21,7 +22,7 @@ function mapNativeError(e) {
   if (/permission|denied|not.?allowed/.test(msg)) return new VoiceError('permission');
   if (/no match|no speech|speech timeout|timeout|nothing/.test(msg)) return new VoiceError('no-speech');
   if (/not available|unavailable|not supported/.test(msg)) return new VoiceError('unavailable');
-  return new VoiceError('failed');
+  return new VoiceError('failed', String(e?.message ?? e ?? '').slice(0, 120));
 }
 
 /* ---------------------------- Listening ---------------------------- */
@@ -81,17 +82,26 @@ export async function listen(lang) {
     throw new VoiceError('permission');
   }
 
+  const options = {
+    language: LANGUAGES[lang].speech,
+    maxResults: 1,
+    prompt: '',
+    partialResults: false,
+    popup: false,
+  };
   let result;
   try {
-    result = await SpeechRecognition.start({
-      language: LANGUAGES[lang].speech,
-      maxResults: 1,
-      prompt: '',
-      partialResults: false,
-      popup: false,
-    });
-  } catch (e) {
-    throw mapNativeError(e);
+    result = await SpeechRecognition.start(options);
+  } catch (first) {
+    const error = mapNativeError(first);
+    if (error.code !== 'failed') throw error;
+    // Often the phone's recogniser was still busy a moment ago: wait and try once more.
+    await new Promise((r) => setTimeout(r, 900));
+    try {
+      result = await SpeechRecognition.start(options);
+    } catch (second) {
+      throw mapNativeError(second);
+    }
   }
   const text = String(result?.matches?.[0] ?? '').trim();
   if (!text) throw new VoiceError('no-speech');
