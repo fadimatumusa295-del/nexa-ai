@@ -15,6 +15,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.widget.Toast;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -290,7 +291,7 @@ public class NexaListenService extends Service {
             if (results != null) {
                 handleResults(results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION));
             }
-            scheduleNext(500);
+            scheduleNext(System.currentTimeMillis() < awaitingCommandUntil ? 100 : 500);
         }
     };
 
@@ -317,6 +318,7 @@ public class NexaListenService extends Service {
             // Only "Nexa" so far: the next thing said is the command.
             awaitingCommandUntil = System.currentTimeMillis() + WAIT_FOR_COMMAND_MS;
             beep();
+            toast("NEXA: listening… say your command");
             return;
         }
         if (System.currentTimeMillis() < awaitingCommandUntil) {
@@ -331,6 +333,8 @@ public class NexaListenService extends Service {
     // Opens NEXA with the command. Android only allows this while NEXA is closed if the
     // "Display over other apps" permission is on (the app checks that before starting).
     private void dispatch(String command) {
+        toast("NEXA heard: " + command);
+        offerCommand(command);
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
@@ -340,6 +344,54 @@ public class NexaListenService extends Service {
             startActivity(intent);
         } catch (Exception e) {
             /* blocked by Android: nothing more can be done from here */
+        }
+    }
+
+    private void toast(final String message) {
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Toast.makeText(NexaListenService.this, message, Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    /* no toast: not important */
+                }
+            }
+        });
+    }
+
+    // Backup in case Android refuses to open NEXA from the background: a notification that
+    // opens NEXA with the command when tapped (and pops up full-screen where Android allows).
+    private void offerCommand(String command) {
+        try {
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager == null) {
+                return;
+            }
+            Notification.Builder builder;
+            if (Build.VERSION.SDK_INT >= 26) {
+                manager.createNotificationChannel(
+                    new NotificationChannel("nexa_command", "NEXA AI commands", NotificationManager.IMPORTANCE_HIGH)
+                );
+                builder = new Notification.Builder(this, "nexa_command");
+            } else {
+                builder = new Notification.Builder(this);
+            }
+            Intent open = new Intent(this, MainActivity.class);
+            open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            open.putExtra(EXTRA_COMMAND, command);
+            PendingIntent pending = PendingIntent.getActivity(
+                this, 2, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            builder
+                .setContentTitle("NEXA AI")
+                .setContentText("Tap to run: " + command)
+                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                .setAutoCancel(true)
+                .setContentIntent(pending)
+                .setFullScreenIntent(pending, true);
+            manager.notify(NOTIFICATION_ID + 1, builder.build());
+        } catch (Exception e) {
+            /* no backup notification */
         }
     }
 
