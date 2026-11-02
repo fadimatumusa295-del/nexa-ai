@@ -65,7 +65,7 @@ public class NexaListenService extends Service {
             service.handler.post(new Runnable() {
                 @Override
                 public void run() {
-                    service.cancelListening();
+                    service.releaseRecognizer(); // give the microphone to the app completely
                     service.scheduleNext(1000);
                 }
             });
@@ -108,12 +108,8 @@ public class NexaListenService extends Service {
 
         instance = this;
         stopped = false;
-        if (recognizer == null) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
-            recognizer.setRecognitionListener(listener);
-        }
         // (Re)start from the beginning so a new language takes effect.
-        cancelListening();
+        releaseRecognizer();
         scheduleNext(400);
         return START_NOT_STICKY;
     }
@@ -196,13 +192,18 @@ public class NexaListenService extends Service {
     }
 
     private void startListening() {
-        if (stopped || recognizer == null || listening) {
+        if (stopped || listening) {
             return;
         }
         if (appVisible) {
             // NEXA is on screen and uses the microphone itself: check again in a moment.
+            releaseRecognizer();
             scheduleNext(1000);
             return;
+        }
+        if (recognizer == null) {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            recognizer.setRecognitionListener(listener);
         }
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
@@ -216,6 +217,20 @@ public class NexaListenService extends Service {
         } catch (Exception e) {
             listening = false;
             scheduleNext(1500);
+        }
+    }
+
+    // Fully lets go of the speech recogniser (the phone allows only one at a time).
+    private void releaseRecognizer() {
+        listening = false;
+        if (recognizer != null) {
+            try {
+                recognizer.cancel();
+                recognizer.destroy();
+            } catch (Exception e) {
+                /* already gone */
+            }
+            recognizer = null;
         }
     }
 

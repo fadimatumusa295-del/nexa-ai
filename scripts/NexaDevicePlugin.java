@@ -399,6 +399,7 @@ public class NexaDevicePlugin extends Plugin {
             return;
         }
         try {
+            NexaListenService.setAppVisible(true); // the user is looking at NEXA right now
             // Android 13+ shows the "NEXA AI is listening" notice only if this is allowed.
             if (Build.VERSION.SDK_INT >= 33
                 && getContext().checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
@@ -419,6 +420,13 @@ public class NexaDevicePlugin extends Plugin {
         } catch (Exception e) {
             call.reject("start-failed");
         }
+    }
+
+    // The page tells the service when NEXA is on screen (more reliable than activity events).
+    @PluginMethod
+    public void setAppVisible(PluginCall call) {
+        NexaListenService.setAppVisible(Boolean.TRUE.equals(call.getBoolean("visible", true)));
+        call.resolve();
     }
 
     @PluginMethod
