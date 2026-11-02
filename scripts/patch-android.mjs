@@ -17,6 +17,9 @@ import { packageNames } from '../src/apps.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MARKER = '<!-- NEXA-PATCH -->';
 
+// The Java files copied into the Android project (all in the app's own package).
+export const JAVA_FILES = ['NexaDevicePlugin.java', 'NexaListenService.java', 'NexaWake.java'];
+
 /* ------------------------------ 1 + 2: manifest ------------------------------ */
 
 export function patchManifest(xml) {
@@ -31,6 +34,10 @@ export function patchManifest(xml) {
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
@@ -49,7 +56,17 @@ ${packages}
   const idx = xml.indexOf('<application');
   if (idx === -1) throw new Error('No <application> tag found in AndroidManifest.xml');
   const lineStart = xml.lastIndexOf('\n', idx) + 1;
-  return xml.slice(0, lineStart) + block + '\n' + xml.slice(lineStart);
+  const out = xml.slice(0, lineStart) + block + '\n' + xml.slice(lineStart);
+
+  // The hands-free listening service (scripts/NexaListenService.java).
+  const end = out.lastIndexOf('</application>');
+  if (end === -1) throw new Error('No </application> tag found in AndroidManifest.xml');
+  const service = `<service
+            android:name=".NexaListenService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+    `;
+  return out.slice(0, end) + service + out.slice(end);
 }
 
 /* ------------------------------ 3: helper plugin ------------------------------ */
@@ -95,8 +112,10 @@ function installPlugin(androidDir, appId) {
   const javaDir = path.join(androidDir, 'app/src/main/java', ...appId.split('.'));
   fs.mkdirSync(javaDir, { recursive: true });
 
-  const source = fs.readFileSync(path.join(here, 'NexaDevicePlugin.java'), 'utf8');
-  fs.writeFileSync(path.join(javaDir, 'NexaDevicePlugin.java'), withPackage(source, appId));
+  for (const file of JAVA_FILES) {
+    const source = fs.readFileSync(path.join(here, file), 'utf8');
+    fs.writeFileSync(path.join(javaDir, file), withPackage(source, appId));
+  }
 
   const mainPath = path.join(javaDir, 'MainActivity.java');
   if (!fs.existsSync(mainPath)) throw new Error(`MainActivity.java not found at ${mainPath}`);
