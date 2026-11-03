@@ -16,6 +16,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.widget.Toast;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
@@ -52,6 +53,9 @@ public class NexaListenService extends Service {
     private boolean stopped = false;
     private long awaitingCommandUntil = 0;
     private String language = "en-NG";
+    private PowerManager.WakeLock wakeLock;
+    private int sessionId = 0;
+    private int errorStreak = 0;
 
     /* ------------------------- silencing the recogniser's beeps ------------------------- */
     // Android's speech recogniser plays a "beep" every time it starts listening. Because this
@@ -61,23 +65,33 @@ public class NexaListenService extends Service {
     // hands-free stops, and, if the phone killed the service, the next time NEXA starts.
 
     private static final String PREFS = "nexa_hands_free";
-    private static final String KEY_MUTED = "muted";
+    private static final String KEY_MUTED = "muted_streams"; // e.g. "3,5,1"
+    // music, notification, system, accessibility, dtmf. Never the ringtone, calls or alarms.
+    private static final int[] BEEP_STREAMS = { 3, 5, 1, 10, 8 };
 
     private void muteBeeps() {
         try {
             AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            if (audio == null) {
-                return;
-            }
             SharedPreferences prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            if (prefs.getBoolean(KEY_MUTED, false)) {
-                return; // already muted by us
+            if (audio == null || !prefs.getString(KEY_MUTED, "").isEmpty()) {
+                return; // nothing to do, or already muted by us
             }
-            if (!audio.isMusicActive()) { // never silence music you are listening to
-                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0);
+            StringBuilder done = new StringBuilder();
+            for (int stream : BEEP_STREAMS) {
+                try {
+                    if (stream == 3 && audio.isMusicActive()) {
+                        continue; // never silence music you are listening to
+                    }
+                    if (audio.isStreamMute(stream)) {
+                        continue; // you muted it yourself: leave it that way
+                    }
+                    audio.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0);
+                    done.append(done.length() == 0 ? "" : ",").append(stream);
+                } catch (Exception e) {
+                    /* this stream may not be muted on this phone: try the next one */
+                }
             }
-            audio.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_MUTE, 0);
-            prefs.edit().putBoolean(KEY_MUTED, true).apply();
+            prefs.edit().putString(KEY_MUTED, done.length() == 0 ? "none" : done.toString()).apply();
         } catch (Exception e) {
             /* the phone does not allow it: the beeps simply stay */
         }
@@ -87,15 +101,21 @@ public class NexaListenService extends Service {
     public static void restoreSound(Context context) {
         try {
             SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-            if (!prefs.getBoolean(KEY_MUTED, false)) {
+            String done = prefs.getString(KEY_MUTED, "");
+            if (done.isEmpty()) {
                 return;
             }
             AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-            if (audio != null) {
-                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0);
-                audio.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_UNMUTE, 0);
+            if (audio != null && !done.equals("none")) {
+                for (String part : done.split(",")) {
+                    try {
+                        audio.adjustStreamVolume(Integer.parseInt(part), AudioManager.ADJUST_UNMUTE, 0);
+                    } catch (Exception e) {
+                        /* keep going with the others */
+                    }
+                }
             }
-            prefs.edit().putBoolean(KEY_MUTED, false).apply();
+            prefs.edit().putString(KEY_MUTED, "").apply();
         } catch (Exception e) {
             /* nothing more to do */
         }
@@ -159,6 +179,15 @@ public class NexaListenService extends Service {
 
         instance = this;
         stopped = false;
+        try {
+            if (wakeLock == null) {
+                PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nexa:handsfree");
+                wakeLock.acquire(); // keeps listening alive with the screen off
+            }
+        } catch (Exception e) {
+            /* works without it, just less reliably with the screen off */
+        }
         // (Re)start from the beginning so a new language takes effect.
         releaseRecognizer();
         scheduleNext(400);
@@ -179,6 +208,14 @@ public class NexaListenService extends Service {
             recognizer = null;
         }
         restoreSound(this);
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        } catch (Exception e) {
+            /* already released */
+        }
+        wakeLock = null;
         stopForeground(true);
         if (instance == this) {
             instance = null;
@@ -266,9 +303,23 @@ public class NexaListenService extends Service {
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
         try {
             listening = true;
+            final int session = ++sessionId;
             recognizer.startListening(intent);
+            // If the recogniser never answers (it can get stuck), start fresh.
+            handler.postDelayed(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!stopped && listening && session == sessionId) {
+                            releaseRecognizer();
+                            scheduleNext(500);
+                        }
+                    }
+                },
+                30000
+            );
         } catch (Exception e) {
-            listening = false;
+            releaseRecognizer();
             scheduleNext(1500);
         }
     }
@@ -330,13 +381,24 @@ public class NexaListenService extends Service {
                 stopSelf(); // the microphone permission was taken away
                 return;
             }
-            // Silence ("no match" / "timeout") is normal: just listen again.
-            scheduleNext(error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ? 2000 : 700);
+            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                errorStreak = 0; // silence is normal: just listen again
+                scheduleNext(300);
+                return;
+            }
+            // A real problem (busy, no network, stuck): start with a fresh recogniser, and
+            // wait longer if it keeps happening, so the battery is not drained.
+            errorStreak++;
+            releaseRecognizer();
+            long wait = errorStreak >= 5 ? 10000 : (error == SpeechRecognizer.ERROR_NETWORK
+                || error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT || error == SpeechRecognizer.ERROR_SERVER) ? 4000 : 1500;
+            scheduleNext(wait);
         }
 
         @Override
         public void onResults(Bundle results) {
             listening = false;
+            errorStreak = 0;
             if (stopped) {
                 return;
             }
