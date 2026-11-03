@@ -13,7 +13,8 @@ public final class NexaWake {
 
     // The ways a speech recogniser may write the name "Nexa".
     private static final String NAME =
-        "(?:nexa|nexxa|nexsa|neksa|necsa|nexta|nexus|next\\s+a|nex\\s+a|neck\\s?sa)";
+        "(?:nexa|nexxa|nexsa|neksa|necsa|nexta|nexus|nexia|nexsia|neksia|nexar|nixa|naxa|nekza|nexha"
+            + "|next\\s+a|next\\s+sa|next\\s+sir|nex\\s+a|nex\\s+sa|neck\\s?sa|necks\\s?a|neck\\s+sir)";
 
     // [greeting] NAME [punctuation] rest
     private static final Pattern WAKE = Pattern.compile(

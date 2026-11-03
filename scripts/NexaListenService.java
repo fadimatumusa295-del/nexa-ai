@@ -298,7 +298,10 @@ public class NexaListenService extends Service {
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        // Let you finish the whole sentence before the phone decides you have stopped.
+        intent.putExtra("android.speech.extra.SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS", 1500L);
+        intent.putExtra("android.speech.extra.SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS", 1200L);
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
         try {
@@ -383,7 +386,7 @@ public class NexaListenService extends Service {
             }
             if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                 errorStreak = 0; // silence is normal: just listen again
-                scheduleNext(300);
+                scheduleNext(150); // start again at once, so the first word is not missed
                 return;
             }
             // A real problem (busy, no network, stuck): start with a fresh recogniser, and
@@ -405,7 +408,7 @@ public class NexaListenService extends Service {
             if (results != null) {
                 handleResults(results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION));
             }
-            scheduleNext(System.currentTimeMillis() < awaitingCommandUntil ? 100 : 500);
+            scheduleNext(System.currentTimeMillis() < awaitingCommandUntil ? 100 : 150);
         }
     };
 
