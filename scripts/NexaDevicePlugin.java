@@ -15,6 +15,7 @@ import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.provider.AlarmClock;
+import android.provider.CallLog;
 import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.speech.SpeechRecognizer;
@@ -40,7 +41,9 @@ import com.getcapacitor.annotation.PermissionCallback;
     permissions = {
         @Permission(alias = "contacts", strings = { Manifest.permission.READ_CONTACTS }),
         @Permission(alias = "call", strings = { Manifest.permission.CALL_PHONE }),
-        @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO })
+        @Permission(alias = "mic", strings = { Manifest.permission.RECORD_AUDIO }),
+        @Permission(alias = "sms", strings = { Manifest.permission.READ_SMS }),
+        @Permission(alias = "calllog", strings = { Manifest.permission.READ_CALL_LOG })
     }
 )
 public class NexaDevicePlugin extends Plugin {
@@ -354,6 +357,129 @@ public class NexaDevicePlugin extends Plugin {
             call.resolve();
         } catch (Exception e) {
             call.reject("open-failed");
+        }
+    }
+
+    /* ------------------------- messages and missed calls ------------------------- */
+
+    // Name from the contacts for a phone number (or the number itself when unknown).
+    private String nameFor(String number) {
+        if (number == null || number.isEmpty()) {
+            return "?";
+        }
+        Cursor cursor = null;
+        try {
+            Uri uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number));
+            cursor = getContext().getContentResolver().query(
+                uri, new String[] { ContactsContract.PhoneLookup.DISPLAY_NAME }, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                String name = cursor.getString(0);
+                if (name != null && !name.isEmpty()) {
+                    return name;
+                }
+            }
+        } catch (Exception e) {
+            /* no contacts permission or lookup failed: show the number */
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        return number;
+    }
+
+    @PluginMethod
+    public void readSms(PluginCall call) {
+        if (getPermissionState("sms") != PermissionState.GRANTED) {
+            requestPermissionForAlias("sms", call, "smsPermissionResult");
+            return;
+        }
+        doReadSms(call);
+    }
+
+    @PermissionCallback
+    private void smsPermissionResult(PluginCall call) {
+        if (getPermissionState("sms") == PermissionState.GRANTED) {
+            doReadSms(call);
+        } else {
+            call.reject("sms-permission");
+        }
+    }
+
+    private void doReadSms(PluginCall call) {
+        int count = Math.max(1, Math.min(10, call.getInt("count", 3)));
+        Cursor cursor = null;
+        try {
+            cursor = getContext().getContentResolver().query(
+                Uri.parse("content://sms/inbox"),
+                new String[] { "address", "body", "date" },
+                null, null, "date DESC");
+            JSArray items = new JSArray();
+            while (cursor != null && items.length() < count && cursor.moveToNext()) {
+                JSObject item = new JSObject();
+                item.put("from", nameFor(cursor.getString(0)));
+                item.put("body", cursor.getString(1));
+                item.put("date", cursor.getLong(2));
+                items.put(item);
+            }
+            JSObject result = new JSObject();
+            result.put("items", items);
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("read-failed");
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+    }
+
+    @PluginMethod
+    public void getMissedCalls(PluginCall call) {
+        if (getPermissionState("calllog") != PermissionState.GRANTED) {
+            requestPermissionForAlias("calllog", call, "callLogPermissionResult");
+            return;
+        }
+        doReadMissedCalls(call);
+    }
+
+    @PermissionCallback
+    private void callLogPermissionResult(PluginCall call) {
+        if (getPermissionState("calllog") == PermissionState.GRANTED) {
+            doReadMissedCalls(call);
+        } else {
+            call.reject("calllog-permission");
+        }
+    }
+
+    private void doReadMissedCalls(PluginCall call) {
+        int count = Math.max(1, Math.min(15, call.getInt("count", 5)));
+        Cursor cursor = null;
+        try {
+            cursor = getContext().getContentResolver().query(
+                CallLog.Calls.CONTENT_URI,
+                new String[] { CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.DATE },
+                CallLog.Calls.TYPE + " = " + CallLog.Calls.MISSED_TYPE,
+                null,
+                CallLog.Calls.DATE + " DESC");
+            JSArray items = new JSArray();
+            while (cursor != null && items.length() < count && cursor.moveToNext()) {
+                String number = cursor.getString(0);
+                String cached = cursor.getString(1);
+                JSObject item = new JSObject();
+                item.put("from", cached != null && !cached.isEmpty() ? cached : nameFor(number));
+                item.put("date", cursor.getLong(2));
+                items.put(item);
+            }
+            JSObject result = new JSObject();
+            result.put("items", items);
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("read-failed");
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
         }
     }
 
