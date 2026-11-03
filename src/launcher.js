@@ -222,6 +222,30 @@ export async function runCommand(cmd, ctx = {}) {
     }
   }
 
+  if (cmd.kind === 'read-sms' || cmd.kind === 'missed-calls') {
+    const sms = cmd.kind === 'read-sms';
+    let res;
+    try {
+      res = sms ? await NexaDevice.readSms({ count: 3 }) : await NexaDevice.getMissedCalls({ count: 5 });
+    } catch (e) {
+      const denied = /permission/i.test(String(e?.message ?? e));
+      const base = sms ? 'sms' : 'calls';
+      return { ok: false, key: denied ? `${base}Denied` : `${base}Failed`, params: {} };
+    }
+    const items = Array.isArray(res?.items) ? res.items : [];
+    if (!items.length) return { ok: true, level: 'info', speak: true, key: sms ? 'smsNone' : 'callsNone', params: {} };
+    const list = items
+      .map((it) => {
+        const when = formatWhen(it.date, ctx?.lang);
+        const who = String(it.from || '?');
+        return sms
+          ? `${who}${when ? ` (${when})` : ''}: ${String(it.body || '').trim().slice(0, 300)}`
+          : `${who}${when ? ` (${when})` : ''}`;
+      })
+      .join('\n');
+    return { ok: true, level: 'info', speak: true, key: sms ? 'smsList' : 'callsList', params: { list } };
+  }
+
   if (cmd.kind === 'settings-page') {
     const ok = await tryNative(cmd.page);
     if (!ok) return { ok: false, key: 'settingsFailed', params: { page: cmd.label } };
@@ -278,4 +302,20 @@ export async function runCommand(cmd, ctx = {}) {
   }
 
   return { ok: false, key: 'openFailed', params: { app: '?' } };
+}
+
+// "14:05" for today, otherwise "3 Nov". Empty when the date is unknown.
+function formatWhen(ms, lang) {
+  const d = new Date(Number(ms));
+  if (!Number.isFinite(d.getTime())) return '';
+  const now = new Date();
+  const locale = lang === 'ha' ? 'ha-NG' : 'en-NG';
+  const sameDay = d.toDateString() === now.toDateString();
+  try {
+    return sameDay
+      ? d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
+  } catch {
+    return '';
+  }
 }

@@ -160,6 +160,33 @@ function parseBattery(tokens) {
   return tokens.some((t) => BATTERY_ASK.has(t)) ? { kind: 'battery' } : null;
 }
 
+/* ---------------------- read messages / missed calls ---------------------- */
+
+const READ_VERBS = new Set(['read', 'check', 'karanta', 'duba', 'any', 'new', 'latest', 'last', 'unread']);
+const SMS_NOUNS = new Set(['messages', 'message', 'sms', 'texts', 'text', 'sakonni', 'sakonnina', 'sakona', 'sakon']);
+
+function parseInbox(tokens) {
+  if (tokens.length > 8) return null;
+  const phrase = tokens.join(' ');
+  // missed calls: "missed calls", "who called me", "wanda ya kira ni", "kiran da ban dauka"
+  if (
+    (tokens.includes('missed') && (tokens.includes('calls') || tokens.includes('call'))) ||
+    /\bwho (called|rang|phoned)\b/.test(phrase) ||
+    /\bwanda ya kira\b/.test(phrase) ||
+    /\bkiran da ban dauka\b/.test(phrase) ||
+    /\bkirana da ban dauka\b/.test(phrase)
+  ) {
+    return { kind: 'missed-calls' };
+  }
+  const reading = tokens.some((t) => READ_VERBS.has(t));
+  const noun = tokens.some((t) => SMS_NOUNS.has(t));
+  const sending = tokens.some((t) => ['send', 'tura', 'whatsapp', 'to', 'zuwa'].includes(t));
+  if (reading && noun && !sending && !tokens.includes('open') && !tokens.includes('bude')) {
+    return { kind: 'read-sms' };
+  }
+  return null;
+}
+
 /* ------------------- WhatsApp and text messages ------------------- */
 
 const NAME = '(.+?)';
@@ -329,7 +356,7 @@ export function parseCommand(text, now = new Date()) {
   tokens = tokens.slice(i);
   if (tokens.length < 2) return null;
 
-  const device = parseTorch(tokens) || parseVolume(tokens) || parseBattery(tokens) || parseSettingsPage(tokens);
+  const device = parseInbox(tokens) || parseTorch(tokens) || parseVolume(tokens) || parseBattery(tokens) || parseSettingsPage(tokens);
   if (device) return device;
 
   let verb = tokens[0];

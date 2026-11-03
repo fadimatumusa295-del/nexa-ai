@@ -241,6 +241,7 @@ async function handleSend(raw) {
         : await runCommand(command, { lang });
       if (!result.passToAi) {
         showResult(result);
+        if (result.speak && voiceReplies) speakReply(say(result.key, result.params));
         return;
       }
       // Not a phone command after all (for example "open a bank account"): ask the AI.
