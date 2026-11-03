@@ -484,6 +484,9 @@ public class NexaDevicePlugin extends Plugin {
 
     @Override
     public void load() {
+        if (!NexaListenService.isRunning()) {
+            NexaListenService.restoreSound(getContext()); // in case the phone killed the service while muted
+        }
         deliverCommand(getActivity().getIntent());
     }
 

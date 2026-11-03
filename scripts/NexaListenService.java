@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
@@ -52,6 +53,54 @@ public class NexaListenService extends Service {
     private long awaitingCommandUntil = 0;
     private String language = "en-NG";
 
+    /* ------------------------- silencing the recogniser's beeps ------------------------- */
+    // Android's speech recogniser plays a "beep" every time it starts listening. Because this
+    // service listens again and again, that would beep all the time. While it runs in the
+    // background the music and system-sound volumes are muted (not ringtone, calls or
+    // notifications, so you still hear those). Everything is un-muted when NEXA opens, when
+    // hands-free stops, and, if the phone killed the service, the next time NEXA starts.
+
+    private static final String PREFS = "nexa_hands_free";
+    private static final String KEY_MUTED = "muted";
+
+    private void muteBeeps() {
+        try {
+            AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (audio == null) {
+                return;
+            }
+            SharedPreferences prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            if (prefs.getBoolean(KEY_MUTED, false)) {
+                return; // already muted by us
+            }
+            if (!audio.isMusicActive()) { // never silence music you are listening to
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0);
+            }
+            audio.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_MUTE, 0);
+            prefs.edit().putBoolean(KEY_MUTED, true).apply();
+        } catch (Exception e) {
+            /* the phone does not allow it: the beeps simply stay */
+        }
+    }
+
+    /** Un-mutes whatever muteBeeps() muted. Safe to call at any time. */
+    public static void restoreSound(Context context) {
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            if (!prefs.getBoolean(KEY_MUTED, false)) {
+                return;
+            }
+            AudioManager audio = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (audio != null) {
+                audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0);
+                audio.adjustStreamVolume(AudioManager.STREAM_SYSTEM, AudioManager.ADJUST_UNMUTE, 0);
+            }
+            prefs.edit().putBoolean(KEY_MUTED, false).apply();
+        } catch (Exception e) {
+            /* nothing more to do */
+        }
+    }
+
     /* ------------------------------ used by the plugin ------------------------------ */
 
     public static boolean isRunning() {
@@ -67,6 +116,7 @@ public class NexaListenService extends Service {
                 @Override
                 public void run() {
                     service.releaseRecognizer(); // give the microphone to the app completely
+                    restoreSound(service);
                     service.scheduleNext(1000);
                 }
             });
@@ -128,6 +178,7 @@ public class NexaListenService extends Service {
             }
             recognizer = null;
         }
+        restoreSound(this);
         stopForeground(true);
         if (instance == this) {
             instance = null;
@@ -206,6 +257,7 @@ public class NexaListenService extends Service {
             recognizer = SpeechRecognizer.createSpeechRecognizer(this);
             recognizer.setRecognitionListener(listener);
         }
+        muteBeeps();
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, language);
@@ -398,7 +450,7 @@ public class NexaListenService extends Service {
     // A short tone so you know NEXA heard its name.
     private void beep() {
         try {
-            final ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80);
+            final ToneGenerator tone = new ToneGenerator(AudioManager.STREAM_ALARM, 60);
             tone.startTone(ToneGenerator.TONE_PROP_ACK, 200);
             handler.postDelayed(
                 new Runnable() {
