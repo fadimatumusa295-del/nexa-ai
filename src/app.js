@@ -118,6 +118,11 @@ function runFactCommand(command) {
   return { ok: true, key: 'forgotFacts', params: {} };
 }
 
+// Command results that are an answer to a question, so they are read aloud as well.
+const SPOKEN_ANSWERS = new Set([
+  'timeNow', 'dateNow', 'battery', 'batteryCharging', 'recallList', 'recallNone', 'remembered', 'forgotFacts',
+]);
+
 const FACT_COMMANDS = new Set(['remember', 'recall', 'forget-facts']);
 
 /* ------------------------------ UI helpers ------------------------------ */
@@ -241,7 +246,12 @@ async function handleSend(raw) {
         : await runCommand(command, { lang });
       if (!result.passToAi) {
         showResult(result);
-        if (result.speak && voiceReplies) speakReply(say(result.key, result.params));
+        // Answers (time, date, battery, messages...) are spoken too, not only shown.
+        if (result.ok && (result.speak || SPOKEN_ANSWERS.has(result.key))) {
+          const spoken = say(result.key, result.params);
+          lastReply = spoken; // the speaker button repeats it
+          if (voiceReplies) speakReply(spoken);
+        }
         return;
       }
       // Not a phone command after all (for example "open a bank account"): ask the AI.
